@@ -1,17 +1,21 @@
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.cep.CEP;
 import org.apache.flink.cep.PatternFlatSelectFunction;
 import org.apache.flink.cep.PatternStream;
 import org.apache.flink.cep.pattern.Pattern;
 import org.apache.flink.cep.pattern.conditions.SimpleCondition;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.co.CoProcessFunction;
+import org.apache.flink.streaming.api.functions.co.RichCoFlatMapFunction;
 import org.apache.flink.util.Collector;
 
 public class StreamingJob {
@@ -85,20 +89,69 @@ public class StreamingJob {
                   }
                 })
             .map(matchRateMonitor);
-    result2.print();
+    // result2.print();
 
     SingleOutputStreamOperator<Tuple2<Double, Long>> latestInputRate =
         inputRatesStream.keyBy(e -> "dummy").maxBy(1);
-    latestInputRate.print();
+    // latestInputRate.print();
     SingleOutputStreamOperator<Tuple2<Double, Long>> latestMatchRate =
         result2.keyBy(e -> "dummy").maxBy(1);
+    // latestMatchRate.print();
 
-    SingleOutputStreamOperator<String> comparisonResult =
-        latestInputRate
-            .connect(latestMatchRate)
-            .keyBy(e -> "dummy", e -> "dummy")
-            .process(new CompareRatesProcessFunction());
-    comparisonResult.print();
+    latestInputRate
+        .connect(latestMatchRate)
+        .keyBy(e -> "dummy", e -> "dummy")
+        .flatMap(
+            new RichCoFlatMapFunction<Tuple2<Double, Long>, Tuple2<Double, Long>, String>() {
+              private transient ValueState<Double> latestInputRate;
+              private transient ValueState<Double> latestMatchRate;
+
+              @Override
+              public void open(Configuration parameters) throws Exception {
+                latestInputRate =
+                    getRuntimeContext()
+                        .getState(new ValueStateDescriptor<>("latestInputRate", Double.class, 0.0));
+                latestMatchRate =
+                    getRuntimeContext()
+                        .getState(new ValueStateDescriptor<>("latestMatchRate", Double.class, 0.0));
+              }
+
+              @Override
+              public void flatMap1(Tuple2<Double, Long> value, Collector<String> out)
+                  throws Exception {
+                // Double currentRate = latestInputRate == null ? latestInputRate.value();
+                // currentRate = value.f0;
+                latestInputRate.update(value.f0);
+                // this.latestInputRate = value.f0;
+                // System.out.println("Input rate1: " + value);
+                out.collect("Input rate1: " + value);
+                // latestInputRate = value;
+                // compareAndOutput(out);
+              }
+
+              @Override
+              public void flatMap2(Tuple2<Double, Long> value, Collector<String> out)
+                  throws Exception {
+                latestMatchRate.update(value.f0);
+                if (latestInputRate.value() <= latestMatchRate.value()) {
+                  out.collect(
+                      "Match rate is higher than input rate: "
+                          + latestMatchRate.value()
+                          + " > "
+                          + latestInputRate.value());
+                  System.out.println("Trigger switch");
+                }
+                out.collect("Input rate2: " + value);
+              }
+            })
+        .print();
+
+    // SingleOutputStreamOperator<String> comparisonResult =
+    //     latestInputRate
+    //         .connect(latestMatchRate)
+    //         .keyBy(e -> "dummy", e -> "dummy")
+    //         .process(new CompareRatesProcessFunction());
+    // comparisonResult.print();
 
     // DataStream<String> result3 = result2.map(new CompareRates(inputRates, matchRates));
 
@@ -163,15 +216,23 @@ public class StreamingJob {
 
     private void compareAndOutput(Collector<String> out) {
       if (latestInputRate != null && latestMatchRate != null) {
-        if (latestInputRate.f0.equals(latestMatchRate.f0)) {
-          out.collect("Values are equal: " + latestInputRate.f0);
-        } else {
+        if (latestInputRate.f0 <= latestMatchRate.f0) {
           out.collect(
-              "Values are different. Input Rate: "
-                  + latestInputRate.f0
-                  + ", Match Rate: "
-                  + latestMatchRate.f0);
+              "Match rate is higher than input rate: "
+                  + latestMatchRate.f0
+                  + " > "
+                  + latestInputRate.f0);
+          System.out.println("Trigger switch");
         }
+        // if (latestInputRate.f0.equals(latestMatchRate.f0)) {
+        //   out.collect("Values are equal: " + latestInputRate.f0);
+        // } else {
+        //   out.collect(
+        //       "Values are different. Input Rate: "
+        //           + latestInputRate.f0
+        //           + ", Match Rate: "
+        //           + latestMatchRate.f0);
+        // }
       }
     }
   }
