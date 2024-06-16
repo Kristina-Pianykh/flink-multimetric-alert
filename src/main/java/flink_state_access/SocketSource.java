@@ -52,17 +52,12 @@ public class SocketSource extends RichSourceFunction<Event> {
         String line;
         while ((line = reader.readLine()) != null) {
           System.out.println("Received line: " + line);
-          // Expecting input in the format "name,timestamp"
-          String[] parts = line.split(",");
-          if (parts.length == 2) {
-            String name = parts[0];
-            long timestamp = Long.parseLong(parts[1].trim());
-            if (name.equals("control") && timestamp == 1) {
-              pattern2Enabled = !pattern2Enabled;
-            }
-            System.out.println(new Event(name, timestamp, pattern2Enabled));
-            sourceContext.collect(new Event(name, timestamp, pattern2Enabled));
+          // Expecting input in the format "name"
+          if (line.equals("control")) {
+            pattern2Enabled = !pattern2Enabled;
           }
+          System.out.println(new Event(line, pattern2Enabled));
+          sourceContext.collect(new Event(line, pattern2Enabled));
         }
       } catch (IOException ex) {
         ex.printStackTrace();

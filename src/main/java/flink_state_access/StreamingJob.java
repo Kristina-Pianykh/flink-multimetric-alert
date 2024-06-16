@@ -8,6 +8,7 @@ import org.apache.flink.cep.PatternStream;
 import org.apache.flink.cep.pattern.Pattern;
 import org.apache.flink.cep.pattern.conditions.SimpleCondition;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.co.CoProcessFunction;
@@ -23,6 +24,7 @@ public class StreamingJob {
 
     env.setParallelism(1);
     DataStream<Event> inputEventStream = env.addSource(new SocketSource(port), "Socket Source");
+    KeyedStream<Event, String> monitoredInputSteam = inputEventStream.keyBy(e -> "inputs");
 
     MonitorInputRate inputRateMonitor = new MonitorInputRate();
     DataStream<Tuple2<Double, Long>> inputRatesStream = inputEventStream.map(inputRateMonitor);
