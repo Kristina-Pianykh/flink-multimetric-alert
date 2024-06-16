@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: flink_state_access.AppTest
+-------------------------------------------------------------------------------
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.011 s -- in flink_state_access.AppTest
