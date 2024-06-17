@@ -5,7 +5,6 @@ import org.apache.flink.streaming.api.functions.source.RichSourceFunction;
 public class SocketSource extends RichSourceFunction<Event> {
 
   private volatile boolean isRunning = true;
-  private String hostname = "localhost";
   private int port = 6666;
   public static boolean pattern2Enabled = true;
 
