@@ -1,17 +1,13 @@
+import java.io.*;
 import java.util.*;
-import org.apache.flink.api.common.state.ValueState;
-import org.apache.flink.api.common.state.ValueStateDescriptor;
-import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.cep.CEP;
 import org.apache.flink.cep.PatternFlatSelectFunction;
 import org.apache.flink.cep.PatternStream;
 import org.apache.flink.cep.pattern.Pattern;
 import org.apache.flink.cep.pattern.conditions.SimpleCondition;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.co.RichCoFlatMapFunction;
 import org.apache.flink.util.Collector;
 
 public class StreamingJob {
@@ -23,12 +19,19 @@ public class StreamingJob {
     DataStream<Event> inputEventStream = env.addSource(new SocketSource(port), "Socket Source");
 
     // filter for the relevant input events (contributing to the match of a multi-sink query)
-    DataStream<Event> pepePopoStream =
-        inputEventStream.filter(e -> (e.getName().equals("pepe") || e.getName().equals("popo")));
+    ArrayList<DataStream<Double>> nonPartInputRates = new ArrayList<>();
+    for (String s : new String[] {"popo", "kris", "nick"}) {
+      DataStream<Double> nonPartInputRate =
+          GenerateContinuousRates.generateContinuousRatesFromEvents(
+              inputEventStream.filter(e -> e.getName().equals(s)));
+      // nonPartInputRate.print();
+      nonPartInputRates.add(nonPartInputRate);
+    }
 
-    // attach a rate monitor to the input stream of relevant events
-    DataStream<Tuple2<Double, Long>> inputRatesStream = pepePopoStream.map(new MonitorInputRate());
-    inputRatesStream.print();
+    DataStream<Double> partInputRates =
+        GenerateContinuousRates.generateContinuousRatesFromEvents(
+            inputEventStream.filter(e -> e.getName().equals("pepe")));
+    // partInputRates.print();
 
     // Define a pattern: looking for a sequence of "pepe" -> "popo"
     Pattern<Event, ?> pattern =
@@ -51,75 +54,56 @@ public class StreamingJob {
 
     PatternStream<Event> patternStream = CEP.pattern(inputEventStream, pattern).inProcessingTime();
 
-    DataStream<Tuple2<Double, Long>> result =
-        patternStream
-            .flatSelect(
-                new PatternFlatSelectFunction<Event, String>() {
-                  @Override
-                  public void flatSelect(
-                      Map<String, List<Event>> patternMatches, Collector<String> out)
-                      throws Exception {
-                    System.out.println("Match found: " + patternMatches);
-                    out.collect("Match found: " + patternMatches);
-                  }
-                })
-            .map(new MonitorMatchRate());
-    // result2.print();
+    DataStream<String> matches =
+        patternStream.flatSelect(
+            new PatternFlatSelectFunction<Event, String>() {
+              @Override
+              public void flatSelect(Map<String, List<Event>> patternMatches, Collector<String> out)
+                  throws Exception {
+                System.out.println("Match found: " + patternMatches);
+                out.collect("Match found: " + patternMatches);
+              }
+            });
+    DataStream<Double> matchRates =
+        GenerateContinuousRates.generateContinuousRatesFromStrings(matches);
+    // matchRates.print();
 
     // determine the tuple with the latest input rate (i.e. biggest timestamp)
-    SingleOutputStreamOperator<Tuple2<Double, Long>> latestInputRate =
-        inputRatesStream.keyBy(e -> "dummy").maxBy(1);
-    latestInputRate.print();
-    SingleOutputStreamOperator<Tuple2<Double, Long>> latestMatchRate =
-        result.keyBy(e -> "dummy").maxBy(1);
-    latestMatchRate.print();
+    // SingleOutputStreamOperator<Tuple2<Double, Long>> latestPartInputRates =
+    //     partInputRates.keyBy(e -> "dummy").maxBy(1);
+    // // latestPartInputRates.print();
+    // SingleOutputStreamOperator<Tuple2<Double, Long>> latestMatchRates =
+    //     matchRates.keyBy(e -> "dummy").maxBy(1);
+    // // latestMatchRates.print();
+
+    // ArrayList<SingleOutputStreamOperator<Tuple2<Double, Long>>> latestNonPartInputRates =
+    //     new ArrayList<>();
+    // for (DataStream<Tuple2<Double, Long>> stream : nonPartInputRates) {
+    //   latestNonPartInputRates.add(stream.keyBy(e -> "dummy").maxBy(1));
+    // }
 
     // perform stateful comparison of the latest input rate and the latest match rate
-    latestInputRate
-        .connect(latestMatchRate)
-        .keyBy(
-            e -> "dummy",
-            e -> "dummy") // cast from ConnectedStreams to KeyedConnectedStreams, the key is dummy
-        .flatMap(
-            new RichCoFlatMapFunction<Tuple2<Double, Long>, Tuple2<Double, Long>, String>() {
-              private transient ValueState<Double> latestInputRate;
-              private transient ValueState<Double> latestMatchRate;
+    SingleOutputStreamOperator<Double> connectingStream = null;
+    SingleOutputStreamOperator<Double> computeRatesStream = nonPartInputRates.get(0).map(e -> e);
 
-              @Override
-              public void open(Configuration ignored) throws Exception {
-                latestInputRate =
-                    getRuntimeContext()
-                        .getState(new ValueStateDescriptor<>("latestInputRate", Double.class, 0.0));
-                latestMatchRate =
-                    getRuntimeContext()
-                        .getState(new ValueStateDescriptor<>("latestMatchRate", Double.class, 0.0));
-              }
+    for (int k = 1; k < (nonPartInputRates.size() + 2); k++) {
 
-              @Override
-              public void flatMap1(Tuple2<Double, Long> value, Collector<String> out)
-                  throws Exception {
-                latestInputRate.update(value.f0);
-                // System.out.println("Input rate1: " + value);
-                out.collect("Input rate1: " + value);
-              }
+      if (k < nonPartInputRates.size()) {
+        connectingStream = nonPartInputRates.get(k).map(e -> e);
+      } else if (k == nonPartInputRates.size()) {
+        connectingStream = matchRates.map(e -> e);
+      } else {
+        connectingStream = partInputRates.map(e -> e);
+      }
+      // SingleOutputStreamOperator<Double> connectingStream = allRates.get(k).map(e -> e.f0);
 
-              // simulate the case when the result of comparison fires a trigger
-              @Override
-              public void flatMap2(Tuple2<Double, Long> value, Collector<String> out)
-                  throws Exception {
-                latestMatchRate.update(value.f0);
-                if (latestInputRate.value() <= latestMatchRate.value()) {
-                  out.collect(
-                      "Match rate is higher than input rate: "
-                          + latestMatchRate.value()
-                          + " > "
-                          + latestInputRate.value());
-                  System.out.println("Trigger switch");
-                }
-                out.collect("Input rate2: " + value);
-              }
-            })
-        .print();
+      computeRatesStream
+          .connect(connectingStream)
+          .keyBy(
+              e -> "dummy",
+              e -> "dummy") // cast from ConnectedStreams to KeyedConnectedStreams, the key is dummy
+          .flatMap(new StatefulCoEvaluation(k, nonPartInputRates.size()));
+    }
 
     env.execute("Flink CEP Example");
   }
