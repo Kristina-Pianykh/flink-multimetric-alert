@@ -19,6 +19,7 @@ public class StatefulCoEvaluation extends RichCoFlatMapFunction<Double, Double, 
   @Override
   public void open(Configuration parameters) throws Exception {
     super.open(parameters);
+    System.out.println("Opening the stateful function");
     currentSum =
         getRuntimeContext().getState(new ValueStateDescriptor<>("currentSum", Double.class, 0.0));
   }
@@ -39,18 +40,20 @@ public class StatefulCoEvaluation extends RichCoFlatMapFunction<Double, Double, 
 
     if (k > nonPartInputSize) {
       Double partInputRate = value;
-      boolean nonZeroRates = tmpSum >= 0.0 && value >= 0.0;
-      System.out.println("Comparing the LHS of the inequality to the RHS");
-      if (partInputRate <= tmpSum && nonZeroRates) {
-        System.out.println(
-            "The rate of the partitioning input is too low for the multi-node"
-                + " placement of the query");
-        System.out.println("Partitioning input rate: " + value + " <= " + tmpSum);
-        System.out.println("Trigger switch");
-      } else if (partInputRate > tmpSum && nonZeroRates) {
-        System.out.println("The rate of the partitioning input is high enough for the multi-node");
-        System.out.println("Partitioning input rate: " + value + " > " + tmpSum);
-      }
+      boolean nonZeroRates = tmpSum > 0.0 && partInputRate > 0.0;
+      // System.out.println("Comparing the LHS of the inequality to the RHS");
+      System.out.println("LHS: " + partInputRate + ", RHS: " + tmpSum);
+      // if ((partInputRate < tmpSum) && nonZeroRates) {
+      //   System.out.println(
+      //       "The rate of the partitioning input is too low for the multi-node"
+      //           + " placement of the query");
+      //   System.out.println("Partitioning input rate: " + partInputRate + " < " + tmpSum);
+      //   System.out.println("Trigger switch");
+      // } else if ((partInputRate > tmpSum) && nonZeroRates) {
+      //   System.out.println("The rate of the partitioning input is high enough for the
+      // multi-node");
+      //   System.out.println("Partitioning input rate: " + partInputRate + " > " + tmpSum);
+      // }
     } else {
       Double updatedSum = tmpSum + value;
       currentSum.update(updatedSum);

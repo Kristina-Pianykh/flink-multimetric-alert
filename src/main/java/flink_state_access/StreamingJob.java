@@ -1,5 +1,7 @@
 import java.io.*;
 import java.util.*;
+import org.apache.flink.api.common.functions.FilterFunction;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.cep.CEP;
 import org.apache.flink.cep.PatternFlatSelectFunction;
 import org.apache.flink.cep.PatternStream;
@@ -17,20 +19,31 @@ public class StreamingJob {
     int port = 6666;
     env.setParallelism(1);
     DataStream<Event> inputEventStream = env.addSource(new SocketSource(port), "Socket Source");
+    DataStream<Event> timerStream = env.addSource(new DummySource(), "Dummy Source");
+
+    // DataStream<Event> allInputEvents = inputEventStream.union(timerStream);
 
     // filter for the relevant input events (contributing to the match of a multi-sink query)
-    ArrayList<DataStream<Double>> nonPartInputRates = new ArrayList<>();
+    ArrayList<DataStream<Tuple2<Double, Long>>> nonPartInputRates = new ArrayList<>();
     for (String s : new String[] {"popo", "kris", "nick"}) {
-      DataStream<Double> nonPartInputRate =
+      DataStream<Tuple2<Double, Long>> nonPartInputRate =
           GenerateContinuousRates.generateContinuousRatesFromEvents(
-              inputEventStream.filter(e -> e.getName().equals(s)));
+              inputEventStream.filter(e -> e.getName().equals(s)).union(timerStream));
+      nonPartInputRate.filter(
+          new FilterFunction<Tuple2<Double, Long>>() {
+            @Override
+            public boolean filter(Tuple2<Double, Long> value) throws Exception {
+              System.out.println("Non-partitioning input rate " + s + ": " + value.f0);
+              return true;
+            }
+          });
       // nonPartInputRate.print();
       nonPartInputRates.add(nonPartInputRate);
     }
 
-    DataStream<Double> partInputRates =
+    DataStream<Tuple2<Double, Long>> partInputRates =
         GenerateContinuousRates.generateContinuousRatesFromEvents(
-            inputEventStream.filter(e -> e.getName().equals("pepe")));
+            inputEventStream.filter(e -> e.getName().equals("pepe")).union(timerStream));
     // partInputRates.print();
 
     // Define a pattern: looking for a sequence of "pepe" -> "popo"
@@ -54,55 +67,77 @@ public class StreamingJob {
 
     PatternStream<Event> patternStream = CEP.pattern(inputEventStream, pattern).inProcessingTime();
 
-    DataStream<String> matches =
+    DataStream<Event> matches =
         patternStream.flatSelect(
-            new PatternFlatSelectFunction<Event, String>() {
+            new PatternFlatSelectFunction<Event, Event>() {
               @Override
-              public void flatSelect(Map<String, List<Event>> patternMatches, Collector<String> out)
+              public void flatSelect(Map<String, List<Event>> patternMatches, Collector<Event> out)
                   throws Exception {
                 System.out.println("Match found: " + patternMatches);
-                out.collect("Match found: " + patternMatches);
+                out.collect(new Event("match", true));
+                // out.collect("Match found: " + patternMatches);
               }
             });
-    DataStream<Double> matchRates =
-        GenerateContinuousRates.generateContinuousRatesFromStrings(matches);
+    matches = matches.union(timerStream);
+
+    DataStream<Tuple2<Double, Long>> matchRates =
+        GenerateContinuousRates.generateContinuousRatesFromEvents(matches);
     // matchRates.print();
 
     // determine the tuple with the latest input rate (i.e. biggest timestamp)
-    // SingleOutputStreamOperator<Tuple2<Double, Long>> latestPartInputRates =
-    //     partInputRates.keyBy(e -> "dummy").maxBy(1);
-    // // latestPartInputRates.print();
-    // SingleOutputStreamOperator<Tuple2<Double, Long>> latestMatchRates =
-    //     matchRates.keyBy(e -> "dummy").maxBy(1);
-    // // latestMatchRates.print();
+    SingleOutputStreamOperator<Tuple2<Double, Long>> latestPartInputRates =
+        partInputRates.keyBy(e -> "dummy").maxBy(1);
+    latestPartInputRates.filter(
+        new FilterFunction<Tuple2<Double, Long>>() {
+          @Override
+          public boolean filter(Tuple2<Double, Long> value) throws Exception {
+            System.out.println("Latest partitioning input rate: " + value.f0);
+            return true;
+          }
+        });
+    // latestPartInputRates.print();
+    SingleOutputStreamOperator<Tuple2<Double, Long>> latestMatchRates =
+        matchRates.keyBy(e -> "dummy").maxBy(1);
+    latestMatchRates.filter(
+        new FilterFunction<Tuple2<Double, Long>>() {
+          @Override
+          public boolean filter(Tuple2<Double, Long> value) throws Exception {
+            System.out.println("Latest match rate: " + value.f0);
+            return true;
+          }
+        });
+    // latestMatchRates.print();
 
-    // ArrayList<SingleOutputStreamOperator<Tuple2<Double, Long>>> latestNonPartInputRates =
-    //     new ArrayList<>();
-    // for (DataStream<Tuple2<Double, Long>> stream : nonPartInputRates) {
-    //   latestNonPartInputRates.add(stream.keyBy(e -> "dummy").maxBy(1));
-    // }
+    ArrayList<SingleOutputStreamOperator<Tuple2<Double, Long>>> latestNonPartInputRates =
+        new ArrayList<>();
+    for (DataStream<Tuple2<Double, Long>> stream : nonPartInputRates) {
+      latestNonPartInputRates.add(stream.keyBy(e -> "dummy").maxBy(1));
+    }
 
     // perform stateful comparison of the latest input rate and the latest match rate
     SingleOutputStreamOperator<Double> connectingStream = null;
-    SingleOutputStreamOperator<Double> computeRatesStream = nonPartInputRates.get(0).map(e -> e);
+    SingleOutputStreamOperator<Double> computeRatesStream =
+        latestNonPartInputRates.get(0).map(e -> e.f0);
 
     for (int k = 1; k < (nonPartInputRates.size() + 2); k++) {
 
       if (k < nonPartInputRates.size()) {
-        connectingStream = nonPartInputRates.get(k).map(e -> e);
+        connectingStream = latestNonPartInputRates.get(k).map(e -> e.f0);
       } else if (k == nonPartInputRates.size()) {
-        connectingStream = matchRates.map(e -> e);
+        connectingStream = latestMatchRates.map(e -> e.f0);
       } else {
-        connectingStream = partInputRates.map(e -> e);
+        connectingStream = latestPartInputRates.map(e -> e.f0);
       }
       // SingleOutputStreamOperator<Double> connectingStream = allRates.get(k).map(e -> e.f0);
 
-      computeRatesStream
-          .connect(connectingStream)
-          .keyBy(
-              e -> "dummy",
-              e -> "dummy") // cast from ConnectedStreams to KeyedConnectedStreams, the key is dummy
-          .flatMap(new StatefulCoEvaluation(k, nonPartInputRates.size()));
+      computeRatesStream =
+          computeRatesStream
+              .connect(connectingStream)
+              .keyBy(
+                  e -> "dummy",
+                  e -> "dummy") // cast from ConnectedStreams to KeyedConnectedStreams, the key is
+              // dummy
+              .flatMap(new StatefulCoEvaluation(k, nonPartInputRates.size()));
     }
 
     env.execute("Flink CEP Example");
