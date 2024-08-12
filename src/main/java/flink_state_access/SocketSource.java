@@ -58,7 +58,10 @@ public class SocketSource extends RichSourceFunction<Tuple2<String, Integer>> {
           // }
           String[] parts = line.split(",");
           Tuple2<String, Integer> event = new Tuple2<>(parts[0], Integer.parseInt(parts[1]));
-          System.out.println(event);
+          // System.out.println(event);
+          // Long timestamp = System.currentTimeMillis();
+          // sourceContext.collectWithTimestamp(event, timestamp);
+          // sourceContext.emitWatermark(new Watermark(timestamp));
           sourceContext.collect(event);
         }
       } catch (IOException ex) {
