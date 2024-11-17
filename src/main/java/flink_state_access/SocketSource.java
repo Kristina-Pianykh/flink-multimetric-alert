@@ -15,14 +15,21 @@ public class SocketSource extends RichSourceFunction<Tuple2<String, Integer>> {
 
   @Override
   public void run(SourceContext<Tuple2<String, Integer>> sourceContext) throws Exception {
-    try (ServerSocket serverSocket = new ServerSocket(port)) {
+    Socket socket = null;
+    try {
+      ServerSocket serverSocket = new ServerSocket(port);
       System.out.println(
           String.format("Server started. Listening for connections on port %d...", port));
 
       while (this.isRunning) {
-        Socket socket = serverSocket.accept();
+        socket = serverSocket.accept();
+        socket.setSoTimeout(5000); // 5 seconds
         new ClientHandler(socket, sourceContext).start(); // Hand off to a new thread
       }
+    } catch (SocketTimeoutException ex) {
+      System.out.println("Socket timed out!");
+      socket.close();
+      System.exit(1);
     } catch (IOException e) {
       e.printStackTrace(); // TODO: handle exception
       System.exit(1);
@@ -50,19 +57,18 @@ public class SocketSource extends RichSourceFunction<Tuple2<String, Integer>> {
         System.out.println("Socket for the connection: " + socket.getInetAddress() + " is open.");
 
         String line;
-        while ((line = reader.readLine()) != null) {
-          System.out.println("Received line: " + line);
-          // Expecting input in the format "name"
-          // if (line.equals("control")) {
-          //   pattern2Enabled = !pattern2Enabled;
-          // }
-          String[] parts = line.split(",");
-          Tuple2<String, Integer> event = new Tuple2<>(parts[0], Integer.parseInt(parts[1]));
-          // System.out.println(event);
-          // Long timestamp = System.currentTimeMillis();
-          // sourceContext.collectWithTimestamp(event, timestamp);
-          // sourceContext.emitWatermark(new Watermark(timestamp));
-          sourceContext.collect(event);
+        try {
+          while ((line = reader.readLine()) != null) {
+            System.out.println("Received line: " + line);
+            String[] parts = line.split(",");
+            Tuple2<String, Integer> event = new Tuple2<>(parts[0], Integer.parseInt(parts[1]));
+            sourceContext.collect(event);
+          }
+
+        } catch (SocketTimeoutException ex) {
+          System.out.println("Socket timed out!");
+          socket.close();
+          System.exit(1);
         }
       } catch (IOException ex) {
         ex.printStackTrace();
